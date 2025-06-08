@@ -1,0 +1,239 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Cursor AI Development Rules for Metalloprotein Intrinsicaly Disordered Predictor
+
+## Project Overview
+
+You are developing a dual-track architecture for predicting functionally important conformations in intrinsically disordered metalloproteins. This scientific Python project combines interpretable biophysical models with deep learning approaches and will be deployed on AWS.
+
+## Core Principles
+
+### 1. Scientific Integrity First
+
+- Every prediction must be traceable to either established biophysical principles (interpretable track) or validated against known experimental data
+- Include comprehensive unit tests for all scientific calculations, especially frustration analysis and metal coordination geometry
+- Document all assumptions about protein behavior with citations to relevant literature
+- Never implement "magic numbers" without clear scientific justification
+
+### 2. Dual-Track Architecture Compliance
+
+- Maintain strict separation between interpretable and black box tracks
+- All shared functionality must go through the integration layer
+- Both tracks must implement the same prediction interface: `predict(protein_data: ProteinData) -> PredictionResult`
+- Never allow direct communication between tracks except through the integration layer
+
+### 3. GPU Memory Management
+
+- Always implement gradient checkpointing for models with >100M parameters
+- Use mixed precision training (fp16) by default, with fp32 only for critical calculations
+- Implement dynamic batching based on sequence length to prevent OOM errors
+- Profile memory usage before and after each major model component
+
+### 4. Cloud-First Development
+
+- All file paths must use pathlib for OS-agnostic compatibility
+- Implement proper S3 integration for large file storage (models, datasets)
+- Use environment variables for all configuration (never hardcode credentials)
+- Design for horizontal scaling - avoid shared state between instances
+
+## Technical Guidelines
+
+### Data Handling
+
+```python
+# CORRECT: Proper protein data handling
+class ProteinData:
+    def __init__(self, pdb_path: Path):
+        self.structure = self._load_structure(pdb_path)
+        self.sequence = self._extract_sequence()
+        self.metal_sites = self._identify_metal_sites()
+        
+    @property
+    def is_valid(self) -> bool:
+        return len(self.sequence) > 0 and self.structure is not None
+
+# INCORRECT: Don't mix data loading with model logic
+def process_protein(pdb_file):
+    structure = load_pdb(pdb_file)  # Don't do I/O in model code
+    return model(structure)
+```
+
+### Model Implementation
+
+```python
+# CORRECT: Modular model design
+class InterpretableTrack(nn.Module):
+    def __init__(self, config: InterpretableConfig):
+        super().__init__()
+        self.frustration_module = FrustrationAnalyzer(config.frustration)
+        self.evolution_module = EvolutionaryAnalyzer(config.evolution)
+        self.metal_module = MetalCoordinationAnalyzer(config.metal)
+        
+    def forward(self, protein_data: ProteinData) -> InterpretableResult:
+        # Each module returns explainable features
+        frustration = self.frustration_module(protein_data)
+        evolution = self.evolution_module(protein_data)
+        metal = self.metal_module(protein_data)
+        
+        return InterpretableResult(
+            frustration=frustration,
+            evolution=evolution, 
+            metal=metal,
+            explanation=self._generate_explanation(frustration, evolution, metal)
+        )
+```
+
+### Error Handling
+
+```python
+# CORRECT: Comprehensive error handling for scientific code
+try:
+    coordination_geometry = calculate_metal_coordination(protein_data)
+except InvalidCoordinationError as e:
+    logger.warning(f"Invalid coordination for {protein_data.id}: {e}")
+    coordination_geometry = CoordinationGeometry.UNKNOWN
+except Exception as e:
+    logger.error(f"Unexpected error in coordination analysis: {e}")
+    raise ScientificCalculationError(f"Failed to analyze {protein_data.id}") from e
+```
+
+### AWS Integration
+
+```python
+# CORRECT: Proper AWS resource management
+class S3ModelStorage:
+    def __init__(self):
+        self.s3_client = boto3.client('s3')
+        self.bucket_name = os.environ['MODEL_BUCKET']
+        
+    def save_checkpoint(self, model: nn.Module, epoch: int, track: str):
+        with tempfile.NamedTemporaryFile() as tmp:
+            torch.save(model.state_dict(), tmp.name)
+            key = f"{track}/epoch_{epoch}/model.pt"
+            self.s3_client.upload_file(tmp.name, self.bucket_name, key)
+```
+
+## Validation Requirements
+
+### Before Each Commit
+
+1. Run pytest with coverage > 80%
+2. Verify no hardcoded paths or credentials
+3. Check GPU memory usage doesn't exceed 80% on test data
+4. Validate scientific outputs against known test cases
+
+### Integration Layer Checks
+
+- Ensure agreement metrics are logged for every prediction
+- Verify confidence calibration on validation set
+- Check that ensemble weights sum to 1.0
+- Monitor for track divergence patterns
+
+### Performance Benchmarks
+
+- Interpretable track: <100ms per protein on CPU
+- Black box track: <500ms per protein on GPU
+- Integration layer overhead: <50ms
+- End-to-end latency: <1s including all preprocessing
+
+## Code Style and Documentation
+
+### Scientific Functions
+
+```python
+def calculate_frustration_index(
+    residue_contacts: np.ndarray,
+    energy_matrix: np.ndarray,
+    temperature: float = 300.0
+) -> float:
+    """
+    Calculate local frustration index using Frustratometer algorithm.
+    
+    Based on Ferreiro et al. (2007) PNAS 104(50):19819-24
+    
+    Args:
+        residue_contacts: Contact matrix of shape (n_residues, n_residues)
+        energy_matrix: Pairwise energy values in kcal/mol
+        temperature: Simulation temperature in Kelvin
+        
+    Returns:
+        Frustration index where negative values indicate frustration
+        
+    Raises:
+        ValueError: If matrices have incompatible shapes
+    """
+```
+
+### Model Predictions
+
+```python
+@dataclass
+class PredictionResult:
+    """Container for dual-track prediction results."""
+    
+    ensemble_prediction: torch.Tensor
+    interpretable_score: float
+    blackbox_score: float
+    confidence: float
+    agreement: float
+    explanation: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to JSON-serializable dictionary for API responses."""
+```
+
+## Common Pitfalls to Avoid
+
+1. **Don't cache large tensors in memory** - Use data loaders with proper batching
+2. **Don't trust PDB files** - Always validate structure integrity and handle missing atoms
+3. **Don't mix PyTorch and NumPy operations** - Stay in PyTorch for GPU efficiency
+4. **Don't ignore metal oxidation states** - They affect coordination geometry
+5. **Don't assume protein sequences are clean** - Handle non-standard amino acids
+
+## Testing Strategy
+
+### Unit Tests
+
+- Test each biophysical calculation against published values
+- Verify gradient flow through both tracks
+- Check memory usage stays within bounds
+- Validate AWS integration with moto mocking
+
+### Integration Tests
+
+- Test full pipeline on known protein-metal complexes
+- Verify track agreement on well-characterized proteins
+- Check ensemble predictions improve over individual tracks
+- Monitor prediction consistency across runs
+
+### Scientific Validation
+
+- Compare frustration calculations to published Frustratometer results
+- Validate metal geometries against CSD database statistics
+- Check evolutionary scores against known functional sites
+- Benchmark against experimental binding data when available
+
+## Deployment Checklist
+
+Before deploying to AWS:
+- [ ] All tests pass with coverage > 80%
+- [ ] Docker container builds successfully
+- [ ] Memory profiling shows no leaks
+- [ ] API endpoints return within SLA
+- [ ] Monitoring dashboards configured
+- [ ] Error alerting tested
+- [ ] Model artifacts uploaded to S3
+- [ ] Environment variables documented
+- [ ] Cost estimates calculated
+- [ ] Rollback procedure tested
+
+## Questions to Ask Yourself
+
+1. Can a biologist understand why the model made this prediction?
+2. Will this code run efficiently on a p3.2xlarge instance?
+3. Can we trace this result back to the input data?
+4. Is the scientific reasoning documented clearly?
+5. Will this scale to 1000 proteins per hour?

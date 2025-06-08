@@ -1,0 +1,28 @@
+{
+    "errorLens.enabled": true,
+    "errorLens.gutterIconsEnabled": true,
+    "errorLens.gutterIconSet": "emoji",
+    "mypy.enabled": true,
+    "files.autoSave": "onFocusChange",
+    "editor.renderWhitespace": "all",
+    "editor.autoClosingDelete": "always",
+    "editor.autoClosingOvertype": "always",
+    "editor.autoClosingQuotes": "beforeWhitespace",
+    "include_patterns": [
+    "src/**/*.py",
+    "configs/*.yaml",
+    "tests/**/test_*.py"
+  ],
+  "exclude_patterns": [
+    "data/raw/**",
+    "logs/**",
+    "*.pdb",
+    "*.xtc"
+  ],
+  "custom_instructions": {
+    "always_include_type_hints": true,
+    "prefer_numpy_style_docstrings": true,
+    "validate_tensor_shapes": true,
+    "check_biological_constraints": true
+  }
+}
