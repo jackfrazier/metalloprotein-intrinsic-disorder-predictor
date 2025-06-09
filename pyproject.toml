@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "metalloprotein-intrinsically-disordered-predictor"
+name = "idp-metalloprotein-predictor"
 version = "0.1.0"
 description = "Dual-track architecture for predicting functionally important conformations in intrinsically disordered metalloproteins"
-authors = ["Jack Frazier <jack.frazier03@gmail.com>"]
+authors = ["Your Name <your.email@example.com>"]
 license = "MIT"
 readme = "README.md"
 packages = [{include = "idp_predictor"}]
