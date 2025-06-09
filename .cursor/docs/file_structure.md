@@ -2,12 +2,13 @@
 
 metalloprotein-intrinsically-disordered-predictor/
 ├── .cursor/
-│   ├── rules                          # AI development guidelines
+│   ├── rules/
+│   │    └── midc-development.mdc
 │   └── docs/                          # Project documentation
 │       ├── project-architecture.md
 │       ├── important_functions.md
 │       └── file-structure.md
-├── src/idp_predictor/
+├── src/midp/
 │   ├── __init__.py
 │   ├── core/                          # Shared core functionality
 │   │   ├── __init__.py
@@ -136,5 +137,4 @@ metalloprotein-intrinsically-disordered-predictor/
 ├── pyproject.toml                    # Poetry configuration
 ├── README.md                         # Project documentation
 ├── LICENSE                           # License file
-├── .cursorignore
 └── .gitignore                        # Git ignore rules
