@@ -24,7 +24,6 @@ torch-cluster = "^1.6.3"
 # Protein-specific libraries
 biopython = "^1.82"
 biotite = "^0.38.0"
-torchdrug = "^0.2.1"
 fair-esm = "^2.0.0"
 
 # Scientific computing
@@ -34,10 +33,7 @@ pandas = "^2.1.0"
 scikit-learn = "^1.3.0"
 networkx = "^3.1"
 mdtraj = "^1.9.9"
-
-# Frustration analysis - PyRosetta requires special installation
-# See documentation for PyRosetta installation instructions
-prody = "^2.4.0"
+mdanalysis = "^2.6.0"
 
 # Visualization
 matplotlib = "^3.7.2"
