@@ -110,6 +110,7 @@ class CoevolutionAnalyzer:
         significance_threshold: Optional[float] = None,
         n_workers: Optional[int] = None,
         chunk_size: Optional[int] = None,
+        pseudocount: float = 0.5,
     ):
         """
         Initialize coevolution analyzer.
@@ -119,10 +120,12 @@ class CoevolutionAnalyzer:
             significance_threshold: P-value threshold for significant coupling
             n_workers: Number of parallel workers (default: CPU count)
             chunk_size: Size of sequence chunks for batch processing
+            pseudocount: Pseudocount for frequency calculations
         """
         # Load parameters from config
         coevo_config = config.coevolution
         self.min_separation = min_separation or coevo_config["min_separation"]
+        self.pseudocount = pseudocount
         self.significance_threshold = (
             significance_threshold or coevo_config["significance_threshold"]
         )

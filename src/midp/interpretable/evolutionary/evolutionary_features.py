@@ -194,43 +194,87 @@ class MetalloproteinEvolutionaryAnalyzer(EvolutionaryAnalyzer):
             ) from e
 
     def _validate_msa(self, msa: MultipleSeqAlignment):
-        """Validate MSA meets requirements."""
+        """Validate MSA meets requirements.
+
+        Args:
+            msa: Multiple sequence alignment to validate
+
+        Raises:
+            ValidationError: If MSA does not meet requirements with detailed reason
+        """
         n_sequences = len(msa)
         n_positions = msa.get_alignment_length()
 
+        # Validate sequence count
         if n_sequences < self.min_sequences:
             raise ValidationError(
-                f"MSA has too few sequences: {n_sequences} "
-                f"(minimum: {self.min_sequences})"
+                f"MSA has too few sequences ({n_sequences}). "
+                f"Minimum required: {self.min_sequences}. "
+                "Consider using a larger sequence database or relaxing e-value threshold."
             )
 
         # Calculate effective sequences
         n_effective = self._calculate_effective_sequences(msa)
         if n_effective < self.min_effective_sequences:
             raise ValidationError(
-                f"MSA has too few effective sequences: {n_effective} "
-                f"(minimum: {self.min_effective_sequences})"
+                f"MSA has too few effective sequences ({n_effective}). "
+                f"Minimum required: {self.min_effective_sequences}. "
+                "MSA may be dominated by highly similar sequences. "
+                "Consider using a more diverse sequence set."
             )
 
         # Check gap content
         gap_fractions = []
+        problematic_positions = []
         for pos in range(n_positions):
             gaps = sum(1 for record in msa if record.seq[pos] == "-")
-            gap_fractions.append(gaps / n_sequences)
+            gap_fraction = gaps / n_sequences
+            gap_fractions.append(gap_fraction)
 
-        max_gap_fraction = max(gap_fractions)
-        if max_gap_fraction > self.max_gap_fraction:
+            if gap_fraction > self.max_gap_fraction:
+                problematic_positions.append((pos + 1, gap_fraction))
+
+        if problematic_positions:
+            positions_str = ", ".join(
+                f"pos {pos} ({gap_frac:.1%})"
+                for pos, gap_frac in problematic_positions[:5]
+            )
+            if len(problematic_positions) > 5:
+                positions_str += f" and {len(problematic_positions) - 5} more"
+
             raise ValidationError(
-                f"MSA has positions with too many gaps: {max_gap_fraction:.2%} "
-                f"(maximum: {self.max_gap_fraction:.2%})"
+                f"MSA has positions with too many gaps: {positions_str}. "
+                f"Maximum allowed gap fraction: {self.max_gap_fraction:.1%}. "
+                "Consider removing highly gapped positions or sequences."
             )
 
         # Check coverage
         coverage = 1 - (sum(gap_fractions) / n_positions)
         if coverage < self.min_coverage:
             raise ValidationError(
-                f"MSA has insufficient coverage: {coverage:.2%} "
-                f"(minimum: {self.min_coverage:.2%})"
+                f"MSA has insufficient coverage ({coverage:.1%}). "
+                f"Minimum required: {self.min_coverage:.1%}. "
+                "Consider filtering out sequences with poor alignment quality."
+            )
+
+        # Additional quality checks
+        if n_positions < 20:
+            logger.warning(
+                f"MSA is very short ({n_positions} positions). "
+                "Coevolution analysis may not be reliable."
+            )
+
+        # Check for completely conserved columns
+        n_conserved = sum(
+            1
+            for pos in range(n_positions)
+            if len(set(record.seq[pos] for record in msa)) == 1
+        )
+        if n_conserved / n_positions > 0.5:
+            logger.warning(
+                f"MSA has high proportion of completely conserved positions "
+                f"({n_conserved / n_positions:.1%}). "
+                "Consider using more diverse sequences for better signal."
             )
 
     def _calculate_sequence_weights(self, msa: MultipleSeqAlignment) -> np.ndarray:
@@ -437,30 +481,48 @@ class MetalloproteinEvolutionaryAnalyzer(EvolutionaryAnalyzer):
                     matrix_name="BLOSUM62",
                 )
 
-                # Parse results
+                # Parse results in batches to reduce memory usage
+                sequences = []
+                query_length = len(sequence)
+                batch_size = 50  # Process 50 sequences at a time
+
                 try:
                     blast_records = NCBIXML.parse(result_handle)
                     record = next(blast_records)
+
+                    for alignment in record.alignments:
+                        batch_sequences = []
+                        for hsp in alignment.hsps:
+                            coverage = (hsp.align_length / query_length) * 100
+                            if hsp.expect < 1e-3 and coverage > 70:
+                                hit_seq = SeqRecord(
+                                    Seq(hsp.sbjct),
+                                    id=alignment.accession,
+                                    description=alignment.title[:50],
+                                )
+                                batch_sequences.append(hit_seq)
+
+                            # Process batch if full
+                            if len(batch_sequences) >= batch_size:
+                                sequences.extend(batch_sequences)
+                                batch_sequences = []
+
+                                # Early stop if we have enough sequences
+                                if len(sequences) >= 500:
+                                    break
+
+                        # Add remaining sequences in last batch
+                        sequences.extend(batch_sequences)
+
+                        # Early stop if we have enough sequences
+                        if len(sequences) >= 500:
+                            break
+
                 except (ValueError, StopIteration) as e:
                     raise EvolutionaryAnalysisError(
                         "blast_parsing",
                         f"Failed to parse BLAST results for {protein_data.protein_id}: {str(e)}",
                     )
-
-                # Filter hits and extract sequences
-                sequences = []
-                query_length = len(sequence)
-
-                for alignment in record.alignments:
-                    for hsp in alignment.hsps:
-                        coverage = (hsp.align_length / query_length) * 100
-                        if hsp.expect < 1e-3 and coverage > 70:
-                            hit_seq = SeqRecord(
-                                Seq(hsp.sbjct),
-                                id=alignment.accession,
-                                description=alignment.title[:50],
-                            )
-                            sequences.append(hit_seq)
 
                 # Cache results
                 try:
@@ -787,3 +849,31 @@ class MetalloproteinEvolutionaryAnalyzer(EvolutionaryAnalyzer):
         functional_sites.sort(key=lambda x: x[1], reverse=True)
 
         return functional_sites
+
+    def compute_conservation(self, msa: MultipleSeqAlignment) -> np.ndarray:
+        """
+        Compute per-position conservation scores.
+
+        Args:
+            msa: Multiple sequence alignment
+
+        Returns:
+            Conservation scores for each position
+        """
+        seq_weights = self._calculate_sequence_weights(msa)
+        return self.conservation_analyzer.calculate_conservation_scores(
+            msa, seq_weights, None
+        )
+
+    def compute_coevolution(self, msa: MultipleSeqAlignment) -> np.ndarray:
+        """
+        Compute pairwise coevolution scores.
+
+        Args:
+            msa: Multiple sequence alignment
+
+        Returns:
+            Symmetric matrix of coevolution scores
+        """
+        seq_weights = self._calculate_sequence_weights(msa)
+        return self.coevolution_analyzer.calculate_coevolution_matrix(msa, seq_weights)

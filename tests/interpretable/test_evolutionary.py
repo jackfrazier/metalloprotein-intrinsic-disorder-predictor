@@ -12,7 +12,15 @@ from Bio.Align import MultipleSeqAlignment
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from src.midp.core.data_structures import MetalSite, MetalType, ProteinData, ResidueType
+from src.midp.core.data_structures import (
+    MetalSite,
+    MetalType,
+    ProteinData,
+    ResidueType,
+    Residue,
+    MetalLigand,
+    CoordinationGeometry,
+)
 from src.midp.interpretable.evolutionary.evolutionary_features import (
     CoevolutionAnalyzer,
     ConservationAnalyzer,
@@ -27,20 +35,50 @@ logger = logging.getLogger(__name__)
 def mock_protein_data():
     """Create mock protein data for testing."""
     sequence = "MKCPFCGHKLAMQRLMDAHQGK"
+
+    # Create residues for metal binding
+    cys2 = Residue(
+        residue_type=ResidueType.CYS,
+        position=2,
+        chain_id="A",
+        coordinates=(1.0, 1.0, 1.0),
+    )
+    cys5 = Residue(
+        residue_type=ResidueType.CYS,
+        position=5,
+        chain_id="A",
+        coordinates=(2.0, 2.0, 2.0),
+    )
+
+    # Create metal ligands
+    ligand1 = MetalLigand(
+        residue=cys2,
+        atom_name="SG",
+        coordinates=(1.0, 1.0, 1.0),
+        bond_length=2.3,
+    )
+    ligand2 = MetalLigand(
+        residue=cys5,
+        atom_name="SG",
+        coordinates=(2.0, 2.0, 2.0),
+        bond_length=2.3,
+    )
+
     metal_sites = [
         MetalSite(
             metal_type=MetalType.ZN2,
-            center=(0, 0, 0),
-            coordinating_residues=[
-                ResidueType(position=2, name="CYS"),
-                ResidueType(position=5, name="CYS"),
-            ],
+            center=(0.0, 0.0, 0.0),
+            ligands=[ligand1, ligand2],
+            geometry=CoordinationGeometry.TETRAHEDRAL,
+            geometry_rmsd=0.1,
         )
     ]
+
     return ProteinData(
         protein_id="TEST1",
         sequence=sequence,
         metal_sites=metal_sites,
+        chain_ids=["A"],
     )
 
 
@@ -106,20 +144,50 @@ class TestEvolutionaryAnalyzer:
     def test_terminal_metal_sites(self, create_msa):
         """Test handling of metal sites at sequence termini."""
         sequence = "CXXXC"  # 5 residues with metal sites at ends
+
+        # Create residues for metal binding
+        cys1 = Residue(
+            residue_type=ResidueType.CYS,
+            position=1,
+            chain_id="A",
+            coordinates=(1.0, 1.0, 1.0),
+        )
+        cys5 = Residue(
+            residue_type=ResidueType.CYS,
+            position=5,
+            chain_id="A",
+            coordinates=(2.0, 2.0, 2.0),
+        )
+
+        # Create metal ligands
+        ligand1 = MetalLigand(
+            residue=cys1,
+            atom_name="SG",
+            coordinates=(1.0, 1.0, 1.0),
+            bond_length=2.3,
+        )
+        ligand2 = MetalLigand(
+            residue=cys5,
+            atom_name="SG",
+            coordinates=(2.0, 2.0, 2.0),
+            bond_length=2.3,
+        )
+
         metal_sites = [
             MetalSite(
                 metal_type=MetalType.ZN2,
-                center=(0, 0, 0),
-                coordinating_residues=[
-                    ResidueType(position=1, name="CYS"),
-                    ResidueType(position=5, name="CYS"),
-                ],
+                center=(0.0, 0.0, 0.0),
+                ligands=[ligand1, ligand2],
+                geometry=CoordinationGeometry.TETRAHEDRAL,
+                geometry_rmsd=0.1,
             )
         ]
+
         protein_data = ProteinData(
             protein_id="TEST2",
             sequence=sequence,
             metal_sites=metal_sites,
+            chain_ids=["A"],
         )
 
         # Create MSA with terminal metal sites
@@ -159,6 +227,7 @@ class TestEvolutionaryAnalyzer:
             protein_id="TEST3",
             sequence=sequence,
             metal_sites=[],
+            chain_ids=["A"],
         )
 
         msa = create_msa([
@@ -177,20 +246,50 @@ class TestEvolutionaryAnalyzer:
     def test_invalid_metal_positions(self, create_msa):
         """Test handling of invalid metal positions (out of bounds)."""
         sequence = "MCGK"
+
+        # Create residues for metal binding
+        cys1 = Residue(
+            residue_type=ResidueType.CYS,
+            position=1,
+            chain_id="A",
+            coordinates=(1.0, 1.0, 1.0),
+        )
+        cys10 = Residue(  # Invalid position
+            residue_type=ResidueType.CYS,
+            position=10,
+            chain_id="A",
+            coordinates=(2.0, 2.0, 2.0),
+        )
+
+        # Create metal ligands
+        ligand1 = MetalLigand(
+            residue=cys1,
+            atom_name="SG",
+            coordinates=(1.0, 1.0, 1.0),
+            bond_length=2.3,
+        )
+        ligand2 = MetalLigand(
+            residue=cys10,
+            atom_name="SG",
+            coordinates=(2.0, 2.0, 2.0),
+            bond_length=2.3,
+        )
+
         metal_sites = [
             MetalSite(
                 metal_type=MetalType.ZN2,
-                center=(0, 0, 0),
-                coordinating_residues=[
-                    ResidueType(position=1, name="CYS"),
-                    ResidueType(position=10, name="CYS"),  # Invalid position
-                ],
+                center=(0.0, 0.0, 0.0),
+                ligands=[ligand1, ligand2],
+                geometry=CoordinationGeometry.TETRAHEDRAL,
+                geometry_rmsd=0.1,
             )
         ]
+
         protein_data = ProteinData(
             protein_id="TEST4",
             sequence=sequence,
             metal_sites=metal_sites,
+            chain_ids=["A"],
         )
 
         msa = create_msa([sequence] * 3)
@@ -209,7 +308,8 @@ class TestConservationAnalyzer:
     def test_identical_sequences(self, create_msa):
         """Test conservation analysis with all identical sequences."""
         sequence = "MKCPFCGHK"
-        msa = create_msa([sequence] * 5)  # 5 identical sequences
+        # Create more sequences to meet minimum requirement
+        msa = create_msa([sequence] * 10)  # 10 identical sequences
 
         analyzer = ConservationAnalyzer()
         scores = analyzer.calculate_conservation_scores(msa)
@@ -222,7 +322,7 @@ class TestConservationAnalyzer:
             "M-CPF",
             "M-CPF",
             "M-CPF",
-        ]
+        ] * 4  # Multiply to meet minimum requirement
         msa = create_msa(sequences)
 
         analyzer = ConservationAnalyzer()
@@ -242,7 +342,7 @@ class TestCoevolutionAnalyzer:
             "ABCDE",
             "VWXYZ",
             "VWXYZ",
-        ]
+        ] * 3  # Multiply to meet minimum requirement
         msa = create_msa(sequences)
 
         analyzer = CoevolutionAnalyzer()
@@ -274,7 +374,7 @@ class TestCoevolutionAnalyzer:
             "VWXYZ",
             "VWXYZ",
             "ABCDE",
-        ]
+        ] * 2  # Multiply to meet minimum requirement
         msa = create_msa(sequences)
 
         analyzer = CoevolutionAnalyzer()
@@ -287,14 +387,14 @@ class TestCoevolutionAnalyzer:
 
 def test_end_to_end(mock_protein_data, create_msa):
     """End-to-end test of evolutionary analysis pipeline."""
-    # Create realistic MSA
+    # Create realistic MSA with enough sequences
     sequences = [
         "MKCPFCGHKLAMQRLMDAHQGK",  # Original
         "MKCPYCGHKLAMQRLMDAHQGK",  # Conservative mutation
         "MKCPFCGHRLAMQKLMDAHQGK",  # Nearby mutation
         "MKCPFCDHKLAMQRLMDAHQGK",  # Metal-binding mutation
         "MKCPFCGHKLAMQRLMDAHQGK",  # Identical
-    ]
+    ] * 2  # Multiply to meet minimum requirement
     msa = create_msa(sequences)
 
     analyzer = MetalloproteinEvolutionaryAnalyzer(use_hhblits=False)
