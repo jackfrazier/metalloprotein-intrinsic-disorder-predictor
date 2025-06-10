@@ -21,36 +21,37 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from Bio import AlignIO, SeqIO
 from Bio.Align import MultipleSeqAlignment, PairwiseAligner, substitution_matrices
-from Bio.Blast import NCBIXML, NCBIWWW
+from Bio.Blast import NCBIWWW, NCBIXML
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from scipy.spatial.distance import squareform
 from scipy.stats import entropy
 
-from midp.core.constants import (
+from src.midp.core.constants import (
     AMINO_ACID_PROPERTIES,
     COEVOLUTION_PARAMETERS,
     CONSERVATION_THRESHOLDS,
     METAL_BINDING_PREFERENCES,
     MSA_QUALITY_THRESHOLDS,
 )
-from midp.core.data_structures import (
+from src.midp.core.data_structures import (
     EvolutionaryFeatures,
+    MetalSite,
     MetalType,
     ProteinData,
     ResidueType,
-    MetalSite,
 )
-from midp.core.exceptions import (
+from src.midp.core.exceptions import (
     DataAccessError,
     EvolutionaryAnalysisError,
-    ValidationError,
     ScientificCalculationError,
+    ValidationError,
 )
-from midp.core.interfaces import EvolutionaryAnalyzer
+from src.midp.core.interfaces import EvolutionaryAnalyzer
+
+from .coevolution import CoevolutionAnalyzer
 from .config import EvolutionaryConfig
 from .conservation import ConservationAnalyzer
-from .coevolution import CoevolutionAnalyzer
 
 logger = logging.getLogger(__name__)
 

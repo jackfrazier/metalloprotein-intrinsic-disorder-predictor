@@ -14,8 +14,8 @@ from Bio.Align import MultipleSeqAlignment
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from ...core.constants import MSA_QUALITY_THRESHOLDS
-from ...core.exceptions import ValidationError
+from src.midp.core.constants import MSA_QUALITY_THRESHOLDS
+from src.midp.core.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class MSAProcessor:
                 filtered_records.append(record)
             else:
                 logger.debug(
-                    f"Removing sequence {record.id} with " f"coverage {coverage:.2%}"
+                    f"Removing sequence {record.id} with coverage {coverage:.2%}"
                 )
 
         return MultipleSeqAlignment(filtered_records)

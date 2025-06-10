@@ -5,33 +5,33 @@ This module implements methods to identify coevolving residue pairs that may
 indicate functional coupling, allosteric networks, or coordinated metal binding.
 """
 
-import logging
-from typing import Optional, Dict, List, Set, Tuple
-from functools import lru_cache
-import multiprocessing as mp
-from pathlib import Path
-import tempfile
-import pickle
 import hashlib
+import logging
+import multiprocessing as mp
+import pickle
+import tempfile
+from functools import lru_cache
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from Bio.Align import MultipleSeqAlignment
-from scipy.spatial.distance import squareform
-from scipy.stats import chi2
-from sklearn.preprocessing import StandardScaler
-from scipy import linalg
-from scipy.stats import entropy
-from numba import jit
-from tqdm import tqdm
 from memory_profiler import profile
+from numba import jit
+from scipy import linalg
+from scipy.spatial.distance import squareform
+from scipy.stats import chi2, entropy
+from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
 
-from ...core.constants import METAL_BINDING_PREFERENCES
-from ...core.data_structures import MetalSite, MetalType
-from ...core.exceptions import (
-    ValidationError,
-    ScientificCalculationError,
+from src.midp.core.constants import METAL_BINDING_PREFERENCES
+from src.midp.core.data_structures import MetalSite, MetalType
+from src.midp.core.exceptions import (
     DataAccessError,
+    ScientificCalculationError,
+    ValidationError,
 )
+
 from .config import EvolutionaryConfig
 
 logger = logging.getLogger(__name__)

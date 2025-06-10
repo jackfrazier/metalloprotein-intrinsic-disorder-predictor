@@ -12,13 +12,12 @@ from Bio.Align import MultipleSeqAlignment
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
+from src.midp.core.data_structures import MetalSite, MetalType, ProteinData, ResidueType
 from src.midp.interpretable.evolutionary.evolutionary_features import (
     CoevolutionAnalyzer,
     ConservationAnalyzer,
     MetalloproteinEvolutionaryAnalyzer,
 )
-
-from src.midp.core.data_structures import MetalSite, MetalType, ProteinData, ResidueType
 
 # Set up logging
 logger = logging.getLogger(__name__)

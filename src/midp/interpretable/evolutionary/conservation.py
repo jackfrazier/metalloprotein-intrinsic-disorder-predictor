@@ -6,24 +6,25 @@ amino acid properties and metal-binding preferences.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple, Set
 import re
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from Bio.Align import MultipleSeqAlignment, substitution_matrices
 from scipy.stats import entropy
 
-from ...core.constants import (
+from src.midp.core.constants import (
     AMINO_ACID_PROPERTIES,
     CONSERVATION_THRESHOLDS,
     METAL_BINDING_PREFERENCES,
 )
-from ...core.data_structures import MetalType
-from ...core.exceptions import (
-    ValidationError,
-    ScientificCalculationError,
+from src.midp.core.data_structures import MetalType
+from src.midp.core.exceptions import (
     DataAccessError,
+    ScientificCalculationError,
+    ValidationError,
 )
+
 from .config import EvolutionaryConfig
 
 logger = logging.getLogger(__name__)
