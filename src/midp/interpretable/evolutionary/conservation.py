@@ -6,19 +6,31 @@ amino acid properties and metal-binding preferences.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
+import re
 
 import numpy as np
 from Bio.Align import MultipleSeqAlignment, substitution_matrices
+from Bio.Substitution import MatrixInfo
 from scipy.stats import entropy
 
-from src.midp.core.constants import (
+from ...core.constants import (
     AMINO_ACID_PROPERTIES,
     CONSERVATION_THRESHOLDS,
     METAL_BINDING_PREFERENCES,
 )
+from ...core.data_structures import MetalType
+from ...core.exceptions import (
+    ValidationError,
+    ScientificCalculationError,
+    DataAccessError,
+)
+from .config import EvolutionaryConfig
 
 logger = logging.getLogger(__name__)
+
+# Get configuration instance
+config = EvolutionaryConfig.get_instance()
 
 
 class ConservationAnalyzer:
@@ -35,29 +47,44 @@ class ConservationAnalyzer:
     def __init__(
         self,
         use_blosum: bool = True,
-        blosum_matrix: str = "BLOSUM62",
-        property_weight: float = 0.3,
+        blosum_matrix: Optional[str] = None,
+        property_weight: Optional[float] = None,
     ):
         """
         Initialize conservation analyzer.
 
         Args:
             use_blosum: Whether to use BLOSUM substitution scoring
-            blosum_matrix: Which BLOSUM matrix to use
-            property_weight: Weight for property-based conservation (vs entropy)
+            blosum_matrix: Which BLOSUM matrix to use (default from config)
+            property_weight: Weight for property-based conservation (vs entropy) (default from config)
         """
         self.use_blosum = use_blosum
-        self.property_weight = property_weight
 
-        # Load substitution matrix
-        if use_blosum:
-            self.subst_matrix = substitution_matrices.load(blosum_matrix)
+        # Load parameters from config
+        cons_config = config.conservation
+        self.blosum_matrix = blosum_matrix or cons_config["blosum_matrix"]
+        self.property_weight = property_weight or cons_config["property_weight"]
+
+        # Load property groups from config
+        self.property_groups = cons_config["property_groups"]
+
+        # Load thresholds
+        self.highly_conserved = cons_config["highly_conserved"]
+        self.moderately_conserved = cons_config["moderately_conserved"]
+        self.variable = cons_config["variable"]
+
+        # Load BLOSUM matrix
+        if self.use_blosum:
+            try:
+                self.blosum = getattr(MatrixInfo, self.blosum_matrix)
+            except AttributeError:
+                raise ValueError(f"Invalid BLOSUM matrix: {self.blosum_matrix}")
 
     def calculate_conservation_scores(
         self,
         msa: MultipleSeqAlignment,
         seq_weights: Optional[np.ndarray] = None,
-        metal_positions: Optional[list[int]] = None,
+        metal_positions: Optional[Dict[int, MetalType]] = None,
     ) -> np.ndarray:
         """
         Calculate comprehensive conservation scores for each position.
@@ -65,35 +92,68 @@ class ConservationAnalyzer:
         Args:
             msa: Multiple sequence alignment
             seq_weights: Optional sequence weights to correct for bias
-            metal_positions: Known metal-binding positions for enhanced scoring
+            metal_positions: Dict mapping positions to metal types
 
         Returns:
             Array of conservation scores (0-1) for each position
+
+        Raises:
+            ValidationError: If input validation fails
         """
-        n_positions = msa.get_alignment_length()
+        try:
+            # Validate MSA
+            if len(msa) < 10:
+                raise ValidationError(
+                    f"MSA must have at least 10 sequences, got {len(msa)}"
+                )
 
-        # Calculate different conservation components
-        entropy_scores = self._calculate_entropy_conservation(msa, seq_weights)
-        property_scores = self._calculate_property_conservation(msa, seq_weights)
+            n_positions = msa.get_alignment_length()
 
-        # Combine scores
-        combined_scores = (
-            1 - self.property_weight
-        ) * entropy_scores + self.property_weight * property_scores
+            # Validate sequence weights
+            if seq_weights is not None:
+                if len(seq_weights) != len(msa):
+                    raise ValidationError(
+                        f"Length mismatch: {len(seq_weights)} weights for {len(msa)} sequences"
+                    )
+                weight_sum = np.sum(seq_weights)
+                if not np.isclose(weight_sum, len(msa), rtol=1e-5):
+                    raise ValidationError(
+                        f"Sequence weights should sum to {len(msa)}, got {weight_sum}"
+                    )
 
-        # Apply BLOSUM-based smoothing if enabled
-        if self.use_blosum:
-            combined_scores = self._apply_blosum_smoothing(
-                msa, combined_scores, seq_weights
-            )
+            # Validate metal positions
+            if metal_positions:
+                invalid_pos = [pos for pos in metal_positions if pos > n_positions]
+                if invalid_pos:
+                    raise ValidationError(
+                        f"Metal positions {invalid_pos} exceed sequence length {n_positions}"
+                    )
 
-        # Boost scores for metal-binding positions
-        if metal_positions:
-            combined_scores = self._boost_metal_positions(
-                combined_scores, metal_positions, msa
-            )
+            # Calculate different conservation components
+            entropy_scores = self._calculate_entropy_conservation(msa, seq_weights)
+            property_scores = self._calculate_property_conservation(msa, seq_weights)
 
-        return combined_scores
+            # Combine scores
+            scores = (
+                1 - self.property_weight
+            ) * entropy_scores + self.property_weight * property_scores
+
+            # Apply BLOSUM-based smoothing if enabled
+            if self.use_blosum:
+                scores = self._apply_blosum_smoothing(msa, scores, seq_weights)
+
+            # Boost scores for metal-binding positions
+            if metal_positions:
+                scores = self._boost_metal_positions(scores, metal_positions, msa)
+
+            return scores
+
+        except Exception as e:
+            if not isinstance(e, (ValidationError, ScientificCalculationError)):
+                raise ScientificCalculationError(
+                    f"Conservation calculation failed: {str(e)}"
+                )
+            raise
 
     def _calculate_entropy_conservation(
         self, msa: MultipleSeqAlignment, seq_weights: Optional[np.ndarray] = None
@@ -143,56 +203,41 @@ class ConservationAnalyzer:
         if seq_weights is None:
             seq_weights = np.ones(n_sequences)
 
-        # Define property groups
-        property_groups = {
-            "hydrophobic": set("AILMFVW"),
-            "aromatic": set("FWY"),
-            "polar": set("STNQ"),
-            "positive": set("RKH"),
-            "negative": set("DE"),
-            "small": set("AGST"),
-            "tiny": set("AGS"),
-            "proline": set("P"),
-            "cysteine": set("C"),
-            "metal_binding": set("CHMDE"),
-        }
+        # Calculate property frequencies
+        property_freqs = {prop: 0.0 for prop in self.property_groups}
+        total_weight = 0.0
 
-        for pos in range(n_positions):
-            # Calculate property frequencies
-            property_freqs = {prop: 0.0 for prop in property_groups}
-            total_weight = 0.0
+        for i, record in enumerate(msa):
+            aa = record.seq[pos]
+            if aa != "-" and aa != "X":
+                weight = seq_weights[i]
+                total_weight += weight
 
-            for i, record in enumerate(msa):
-                aa = record.seq[pos]
-                if aa != "-" and aa != "X":
-                    weight = seq_weights[i]
-                    total_weight += weight
+                # Add to property groups
+                for prop, aa_set in self.property_groups.items():
+                    if aa in aa_set:
+                        property_freqs[prop] += weight
 
-                    # Add to property groups
-                    for prop, aa_set in property_groups.items():
-                        if aa in aa_set:
-                            property_freqs[prop] += weight
+        if total_weight == 0:
+            property_scores = np.zeros(n_positions)
+            return property_scores
 
-            if total_weight == 0:
-                property_scores[pos] = 0.0
-                continue
+        # Normalize frequencies
+        for prop in property_freqs:
+            property_freqs[prop] /= total_weight
 
-            # Normalize frequencies
-            for prop in property_freqs:
-                property_freqs[prop] /= total_weight
+        # Calculate property conservation
+        # High score if one property dominates
+        max_prop_freq = max(property_freqs.values())
 
-            # Calculate property conservation
-            # High score if one property dominates
-            max_prop_freq = max(property_freqs.values())
+        # Additional scoring for specific important properties
+        metal_binding_freq = property_freqs["metal_binding"]
+        cysteine_freq = property_freqs["cysteine"]
 
-            # Additional scoring for specific important properties
-            metal_binding_freq = property_freqs["metal_binding"]
-            cysteine_freq = property_freqs["cysteine"]
-
-            # Weighted combination
-            property_scores[pos] = (
-                0.6 * max_prop_freq + 0.2 * metal_binding_freq + 0.2 * cysteine_freq
-            )
+        # Weighted combination
+        property_scores = (
+            0.6 * max_prop_freq + 0.2 * metal_binding_freq + 0.2 * cysteine_freq
+        )
 
         return property_scores
 
@@ -203,55 +248,61 @@ class ConservationAnalyzer:
         seq_weights: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Apply BLOSUM-based smoothing to conservation scores."""
-        n_positions = msa.get_alignment_length()
-        n_sequences = len(msa)
-        smoothed_scores = np.copy(base_scores)
+        if not self.blosum:
+            logger.warning("BLOSUM matrix not available, skipping smoothing")
+            return base_scores
 
-        if seq_weights is None:
-            seq_weights = np.ones(n_sequences)
+        try:
+            n_positions = msa.get_alignment_length()
+            n_sequences = len(msa)
+            smoothed_scores = np.copy(base_scores)
 
-        for pos in range(n_positions):
-            # Get amino acid distribution at this position
-            aa_counts = {}
-            total_weight = 0.0
+            if seq_weights is None:
+                seq_weights = np.ones(n_sequences)
 
-            for i, record in enumerate(msa):
-                aa = record.seq[pos]
-                if aa != "-" and aa != "X":
-                    weight = seq_weights[i]
-                    aa_counts[aa] = aa_counts.get(aa, 0) + weight
-                    total_weight += weight
+            # Validate matrix bounds
+            min_score = float(self.blosum.min())
+            max_score = float(self.blosum.max())
+            score_range = max_score - min_score
 
-            if total_weight == 0 or len(aa_counts) <= 1:
-                continue
+            for pos in range(n_positions):
+                # Get amino acid distribution at this position
+                aa_counts = {}
+                total_weight = 0.0
 
-            # Calculate average BLOSUM score between observed amino acids
-            blosum_conservation = 0.0
-            comparisons = 0
+                for i, record in enumerate(msa):
+                    aa = record.seq[pos]
+                    if aa != "-" and aa != "X":
+                        weight = seq_weights[i]
+                        aa_counts[aa] = aa_counts.get(aa, 0) + weight
+                        total_weight += weight
 
-            aa_list = list(aa_counts.keys())
-            for i in range(len(aa_list)):
-                for j in range(i, len(aa_list)):
-                    aa1, aa2 = aa_list[i], aa_list[j]
+                if total_weight == 0 or len(aa_counts) <= 1:
+                    continue
 
-                    try:
-                        # Get BLOSUM score from the new matrix format
-                        score = self.subst_matrix[aa1, aa2]
-                        weight_product = (
-                            aa_counts[aa1] * aa_counts[aa2] / (total_weight**2)
-                        )
-                        blosum_conservation += score * weight_product
-                        comparisons += weight_product
-                    except KeyError:
-                        # Skip if amino acids not in matrix
-                        continue
+                # Calculate average BLOSUM score between observed amino acids
+                blosum_conservation = 0.0
+                comparisons = 0
 
-            if comparisons > 0:
-                # Normalize BLOSUM score (typical range -4 to 11 for BLOSUM62)
-                min_score = self.subst_matrix.min()
-                max_score = self.subst_matrix.max()
-                score_range = max_score - min_score
-                if score_range > 0:
+                aa_list = list(aa_counts.keys())
+                for i in range(len(aa_list)):
+                    for j in range(i, len(aa_list)):
+                        aa1, aa2 = aa_list[i], aa_list[j]
+                        try:
+                            score = self.blosum[aa1, aa2]
+                            weight_product = (
+                                aa_counts[aa1] * aa_counts[aa2] / (total_weight**2)
+                            )
+                            blosum_conservation += score * weight_product
+                            comparisons += weight_product
+                        except KeyError:
+                            logger.debug(
+                                f"Amino acid pair {aa1}-{aa2} not found in BLOSUM matrix"
+                            )
+                            continue
+
+                if comparisons > 0:
+                    # Normalize BLOSUM score
                     normalized_blosum = (blosum_conservation - min_score) / score_range
                     normalized_blosum = max(0, min(1, normalized_blosum))
 
@@ -260,37 +311,104 @@ class ConservationAnalyzer:
                         0.7 * base_scores[pos] + 0.3 * normalized_blosum
                     )
 
-        return smoothed_scores
+            return smoothed_scores
+
+        except Exception as e:
+            if not isinstance(e, (KeyError, AttributeError)):
+                raise ScientificCalculationError(f"BLOSUM smoothing failed: {str(e)}")
+            raise
 
     def _boost_metal_positions(
-        self, scores: np.ndarray, metal_positions: list[int], msa: MultipleSeqAlignment
+        self,
+        scores: np.ndarray,
+        metal_positions: Dict[int, MetalType],
+        msa: MultipleSeqAlignment,
     ) -> np.ndarray:
-        """Boost conservation scores for known metal-binding positions."""
-        boosted_scores = np.copy(scores)
+        """
+        Boost conservation scores for known metal-binding positions.
 
-        for pos in metal_positions:
-            if pos <= len(scores):
+        Args:
+            scores: Base conservation scores
+            metal_positions: Dict mapping positions to metal types
+            msa: Multiple sequence alignment
+
+        Returns:
+            Boosted conservation scores
+        """
+        try:
+            boosted_scores = np.copy(scores)
+
+            for pos, metal_type in metal_positions.items():
+                if pos > len(scores):
+                    raise ValidationError(
+                        f"Metal position {pos} exceeds sequence length {len(scores)}"
+                    )
+
                 idx = pos - 1  # Convert to 0-indexed
 
-                # Check if metal-binding amino acids are conserved
-                metal_aa_count = 0
+                # Get metal-specific preferences
+                if metal_type not in METAL_BINDING_PREFERENCES:
+                    raise ValidationError(
+                        f"No binding preferences defined for {metal_type}"
+                    )
+
+                preferences = METAL_BINDING_PREFERENCES[metal_type]
+                primary_aas = set(preferences.get("primary", []))
+                secondary_aas = set(preferences.get("secondary", []))
+
+                if not primary_aas and not secondary_aas:
+                    raise ValidationError(
+                        f"No binding residues defined for {metal_type}"
+                    )
+
+                # Check conservation of preferred residues
+                primary_count = 0
+                secondary_count = 0
                 total_count = 0
 
                 for record in msa:
                     aa = record.seq[idx]
                     if aa != "-" and aa != "X":
                         total_count += 1
-                        if aa in "CHMDE":  # Metal-binding residues
-                            metal_aa_count += 1
+                        if aa in primary_aas:
+                            primary_count += 1
+                        elif aa in secondary_aas:
+                            secondary_count += 1
 
                 if total_count > 0:
-                    metal_freq = metal_aa_count / total_count
-                    if metal_freq > 0.5:  # Majority are metal-binding
-                        # Boost score by up to 20%
-                        boost_factor = 1.0 + 0.2 * metal_freq
-                        boosted_scores[idx] = min(1.0, scores[idx] * boost_factor)
+                    # Calculate weighted frequency
+                    primary_freq = primary_count / total_count
+                    secondary_freq = secondary_count / total_count
 
-        return boosted_scores
+                    # Apply metal-specific boost factors
+                    base_boost = preferences.get("conservation_boost", 0.2)
+                    if base_boost <= 0:
+                        raise ValidationError(
+                            f"Invalid conservation boost factor for {metal_type}: {base_boost}"
+                        )
+
+                    # Higher boost for primary binding residues
+                    primary_boost = base_boost * 1.5 * primary_freq
+                    secondary_boost = base_boost * secondary_freq
+
+                    total_boost = primary_boost + secondary_boost
+
+                    # Apply boost with upper limit
+                    boosted_scores[idx] = min(1.0, scores[idx] * (1.0 + total_boost))
+
+                    if total_boost > 0:
+                        logger.debug(
+                            f"Boosted pos {pos} ({metal_type}) by factor {1.0 + total_boost:.2f}"
+                        )
+
+            return boosted_scores
+
+        except Exception as e:
+            if not isinstance(e, ValidationError):
+                raise ScientificCalculationError(
+                    f"Failed to boost metal positions: {str(e)}"
+                )
+            raise
 
     def identify_conserved_metal_motifs(
         self, msa: MultipleSeqAlignment, conservation_scores: np.ndarray
@@ -302,43 +420,29 @@ class ConservationAnalyzer:
             List of dictionaries containing motif information
         """
         motifs = []
-
-        # Common metal-binding motifs (simplified patterns)
-        metal_patterns = {
-            "CxxC": (r"C..C", "Zinc finger-like"),
-            "HxxH": (r"H..H", "Zinc/Iron binding"),
-            "CxxCH": (r"C..CH", "Iron-sulfur cluster"),
-            "DxDxD": (r"D.D.D", "Calcium binding"),
-            "CxxHxxC": (r"C..H..C", "Zinc binding"),
-        }
-
-        # Get consensus sequence
         consensus = self._get_consensus_sequence(msa)
 
-        import re
+        # Get motif patterns from config
+        motif_patterns = config.metal_binding["motif_patterns"]
+        motif_threshold = config.metal_binding["conservation_thresholds"][
+            "motif_detection"
+        ]
 
-        for motif_name, (pattern, description) in metal_patterns.items():
-            # Find pattern matches in consensus
+        for motif_name, pattern in motif_patterns.items():
             for match in re.finditer(pattern, consensus):
                 start, end = match.span()
 
-                # Check if region is conserved
-                region_conservation = np.mean(conservation_scores[start:end])
-
-                if (
-                    region_conservation
-                    > CONSERVATION_THRESHOLDS["moderately_conserved"]
-                ):
-                    motif_info = {
+                # Check if motif positions are conserved
+                motif_scores = conservation_scores[start:end]
+                if np.mean(motif_scores) > motif_threshold:
+                    motifs.append({
                         "name": motif_name,
-                        "description": description,
                         "start": start + 1,  # 1-indexed
                         "end": end,
-                        "sequence": consensus[start:end],
-                        "conservation": region_conservation,
+                        "sequence": match.group(),
+                        "score": float(np.mean(motif_scores)),
                         "positions": list(range(start + 1, end + 1)),
-                    }
-                    motifs.append(motif_info)
+                    })
 
         return motifs
 

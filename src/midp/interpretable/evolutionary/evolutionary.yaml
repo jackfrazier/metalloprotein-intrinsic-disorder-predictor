@@ -1,0 +1,55 @@
+evolutionary:
+  msa:
+    min_sequences: 100
+    min_effective_sequences: 50
+    max_gap_fraction: 0.5
+    min_coverage: 0.7
+    identity_threshold: 0.9
+    chunk_size: 1000  # For processing large MSAs
+    
+  conservation:
+    highly_conserved: 0.8
+    moderately_conserved: 0.6
+    variable: 0.4
+    property_weight: 0.3
+    blosum_matrix: "BLOSUM62"
+    property_groups:
+      hydrophobic: "AILMFVW"
+      aromatic: "FWY"
+      polar: "STNQ"
+      positive: "RKH"
+      negative: "DE"
+      small: "AGST"
+      metal_binding: "CHMDE"
+    
+  coevolution:
+    min_separation: 5
+    pseudocount: 0.5
+    apc_correction: true
+    significance_threshold: 0.05
+    chunk_size: 1000
+    n_workers: null  # Will use CPU count if null
+    
+  metal_binding:
+    boost_factors:
+      FE2: 1.3
+      FE3: 1.3
+      ZN2: 1.2
+      CU1: 1.25
+      CU2: 1.25
+      CA2: 1.15
+      MG2: 1.15
+      MN2: 1.2
+      CO2: 1.2
+      NI2: 1.2
+    motif_patterns:
+      zinc_finger_CCHH: "C..C.{12,}H..H"
+      zinc_finger_CCCC: "C..C.{12,}C..C"
+      iron_sulfur_4Fe4S: "C..C..C.{5,}C"
+      copper_type1: "H.{5,}C.{3,}H.{3,}M"
+      calcium_ef_hand: "D.{3}[DNS].{3}[DNS]"
+      heme_binding: "C..CH"
+      iron_2his_cluster: "H.{3,7}H"
+    conservation_thresholds:
+      motif_detection: 0.7
+      binding_site: 0.6

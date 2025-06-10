@@ -14,8 +14,8 @@ from Bio.Align import MultipleSeqAlignment
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from src.midp.core.constants import MSA_QUALITY_THRESHOLDS
-from src.midp.core.exceptions import ValidationError
+from ...core.constants import MSA_QUALITY_THRESHOLDS
+from ...core.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 

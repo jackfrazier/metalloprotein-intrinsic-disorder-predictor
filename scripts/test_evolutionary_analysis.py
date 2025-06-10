@@ -15,8 +15,8 @@ import logging
 
 import numpy as np
 
-from src.midp.data.loaders import load_protein
-from src.midp.interpretable.evolutionary import MetalloproteinEvolutionaryAnalyzer
+from midp.data.loaders import load_protein
+from midp.interpretable.evolutionary import MetalloproteinEvolutionaryAnalyzer
 
 # Set up logging with debug level
 logging.basicConfig(

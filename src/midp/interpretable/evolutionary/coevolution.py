@@ -6,53 +6,261 @@ indicate functional coupling, allosteric networks, or coordinated metal binding.
 """
 
 import logging
-from typing import Optional, Dict, List, Set
+from typing import Optional, Dict, List, Set, Tuple
+from functools import lru_cache
+import multiprocessing as mp
+from pathlib import Path
+import tempfile
+import pickle
+import hashlib
 
 import numpy as np
 from Bio.Align import MultipleSeqAlignment
 from scipy.spatial.distance import squareform
 from scipy.stats import chi2
 from sklearn.preprocessing import StandardScaler
+from scipy import linalg
+from scipy.stats import entropy
+from numba import jit
+from tqdm import tqdm
+from memory_profiler import profile
 
-from src.midp.core.constants import COEVOLUTION_PARAMETERS
-from src.midp.core.data_structures import MetalSite
+from ...core.constants import METAL_BINDING_PREFERENCES
+from ...core.data_structures import MetalSite, MetalType
+from ...core.exceptions import (
+    ValidationError,
+    ScientificCalculationError,
+    DataAccessError,
+)
+from .config import EvolutionaryConfig
 
 logger = logging.getLogger(__name__)
+
+# Get configuration instance
+config = EvolutionaryConfig.get_instance()
+
+
+# Numba-optimized MI calculation for a single position pair
+@jit(nopython=True)
+def _calculate_position_pair_mi(
+    joint_probs: np.ndarray,
+    marginal_i_probs: np.ndarray,
+    marginal_j_probs: np.ndarray,
+) -> float:
+    """Calculate mutual information between two positions using pre-computed probabilities."""
+    mi = 0.0
+    for idx_i in range(joint_probs.shape[0]):
+        for idx_j in range(joint_probs.shape[1]):
+            if (
+                joint_probs[idx_i, idx_j] > 0
+                and marginal_i_probs[idx_i] > 0
+                and marginal_j_probs[idx_j] > 0
+            ):
+                mi += joint_probs[idx_i, idx_j] * np.log2(
+                    joint_probs[idx_i, idx_j]
+                    / (marginal_i_probs[idx_i] * marginal_j_probs[idx_j])
+                )
+    return mi
+
+
+def _process_sequence_chunk(args):
+    """Process a chunk of sequences for parallel MI calculation."""
+    start_idx, end_idx, msa_chunk, pos_i, pos_j, aa_to_idx, seq_weights_chunk = args
+
+    joint_counts = np.zeros((21, 21))
+    marginal_i = np.zeros(21)
+    marginal_j = np.zeros(21)
+    total_weight = 0.0
+
+    for k, record in enumerate(msa_chunk):
+        aa_i = record.seq[pos_i]
+        aa_j = record.seq[pos_j]
+
+        if aa_i in aa_to_idx and aa_j in aa_to_idx:
+            idx_i = aa_to_idx[aa_i]
+            idx_j = aa_to_idx[aa_j]
+            weight = seq_weights_chunk[k]
+
+            joint_counts[idx_i, idx_j] += weight
+            marginal_i[idx_i] += weight
+            marginal_j[idx_j] += weight
+            total_weight += weight
+
+    return joint_counts, marginal_i, marginal_j, total_weight
 
 
 class CoevolutionAnalyzer:
     """
-    Detects coevolving residue pairs using multiple methods.
+    Detects coevolving residue pairs using mutual information analysis.
 
     Implements:
     - Mutual Information (MI) with APC correction
-    - Direct Coupling Analysis (DCA) approximation
     - Network analysis of coevolution patterns
     - Metal-specific coevolution detection
+
+    The analysis uses a position-specific mutual information approach with
+    the Average Product Correction (APC) to reduce phylogenetic and sampling bias.
+    This helps identify functionally coupled residues, including those involved
+    in metal binding and allosteric networks.
     """
 
     def __init__(
         self,
-        method: str = "mi_apc",
-        min_separation: int = 5,
-        significance_threshold: float = 0.05,
+        min_separation: Optional[int] = None,
+        significance_threshold: Optional[float] = None,
+        n_workers: Optional[int] = None,
+        chunk_size: Optional[int] = None,
     ):
         """
         Initialize coevolution analyzer.
 
         Args:
-            method: Coevolution detection method ("mi_apc", "dca", "both")
             min_separation: Minimum sequence separation for coupling
             significance_threshold: P-value threshold for significant coupling
+            n_workers: Number of parallel workers (default: CPU count)
+            chunk_size: Size of sequence chunks for batch processing
         """
-        self.method = method
-        self.min_separation = min_separation
-        self.significance_threshold = significance_threshold
+        # Load parameters from config
+        coevo_config = config.coevolution
+        self.min_separation = min_separation or coevo_config["min_separation"]
+        self.significance_threshold = (
+            significance_threshold or coevo_config["significance_threshold"]
+        )
+        self.n_workers = n_workers or coevo_config["n_workers"] or mp.cpu_count()
+        self.chunk_size = chunk_size or coevo_config["chunk_size"]
+        self.use_apc = coevo_config["apc_correction"]
 
         # Alphabet for calculations
-        self.alphabet = list("ACDEFGHIKLMNPQRSTVWY")
+        self.alphabet = list("ACDEFGHIKLMNPQRSTVWY-")
         self.aa_to_idx = {aa: i for i, aa in enumerate(self.alphabet)}
         self.n_states = len(self.alphabet)
+
+        # Cache for frequency calculations
+        self._freq_cache = {}
+        self._cache_dir = Path(tempfile.gettempdir()) / "midp_coevo_cache"
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @profile
+    def _calculate_mutual_information(
+        self, msa: MultipleSeqAlignment, seq_weights: np.ndarray
+    ) -> np.ndarray:
+        """Calculate weighted mutual information between all position pairs."""
+        try:
+            n_positions = msa.get_alignment_length()
+            n_sequences = len(msa)
+            mi_matrix = np.zeros((n_positions, n_positions))
+
+            # Validate inputs
+            if len(seq_weights) != n_sequences:
+                raise ValidationError(
+                    f"Sequence weights length ({len(seq_weights)}) "
+                    f"does not match MSA size ({n_sequences})"
+                )
+
+            # Calculate or load cached single-site frequencies
+            cache_key = self._get_cache_key(msa)
+            single_freqs = self._load_cached_frequencies(cache_key)
+
+            if single_freqs is None:
+                single_freqs = self._calculate_single_site_frequencies(msa, seq_weights)
+                self._save_cached_frequencies(cache_key, single_freqs)
+
+            # Process position pairs in parallel
+            position_pairs = [
+                (i, j) for i in range(n_positions) for j in range(i + 1, n_positions)
+            ]
+
+            # Split sequences into chunks for large MSAs
+            if n_sequences > self.chunk_size:
+                sequence_chunks = [
+                    (i, min(i + self.chunk_size, n_sequences))
+                    for i in range(0, n_sequences, self.chunk_size)
+                ]
+            else:
+                sequence_chunks = [(0, n_sequences)]
+
+            # Create process pool
+            with mp.Pool(self.n_workers) as pool:
+                # Process chunks with progress bar
+                with tqdm(total=len(position_pairs), desc="Calculating MI") as pbar:
+                    for i, j in position_pairs:
+                        # Prepare chunk arguments
+                        chunk_args = [
+                            (
+                                start,
+                                end,
+                                msa[start:end],
+                                i,
+                                j,
+                                self.aa_to_idx,
+                                seq_weights[start:end],
+                            )
+                            for start, end in sequence_chunks
+                        ]
+
+                        # Process chunks in parallel
+                        chunk_results = pool.map(_process_sequence_chunk, chunk_args)
+
+                        # Combine chunk results
+                        joint_counts = sum(r[0] for r in chunk_results)
+                        marginal_i = sum(r[1] for r in chunk_results)
+                        marginal_j = sum(r[2] for r in chunk_results)
+                        total_weight = sum(r[3] for r in chunk_results)
+
+                        # Add pseudocounts
+                        pseudocount = self.pseudocount
+                        joint_counts += pseudocount
+                        marginal_i += pseudocount * self.n_states
+                        marginal_j += pseudocount * self.n_states
+                        total_weight += pseudocount * self.n_states * self.n_states
+
+                        # Calculate probabilities
+                        joint_probs = joint_counts / total_weight
+                        marginal_i_probs = marginal_i / total_weight
+                        marginal_j_probs = marginal_j / total_weight
+
+                        # Calculate MI using numba-optimized function
+                        mi = _calculate_position_pair_mi(
+                            joint_probs, marginal_i_probs, marginal_j_probs
+                        )
+
+                        mi_matrix[i, j] = mi
+                        mi_matrix[j, i] = mi
+
+                        pbar.update(1)
+
+            return mi_matrix
+
+        except Exception as e:
+            if not isinstance(e, (ValidationError, ScientificCalculationError)):
+                raise ScientificCalculationError(
+                    f"Mutual information calculation failed: {str(e)}"
+                )
+            raise
+
+    def _get_cache_key(self, msa: MultipleSeqAlignment) -> str:
+        """Generate cache key for MSA frequencies."""
+        # Hash MSA content for cache key
+        msa_str = "\n".join(str(record.seq) for record in msa)
+        return hashlib.md5(msa_str.encode()).hexdigest()
+
+    def _load_cached_frequencies(self, cache_key: str) -> Optional[np.ndarray]:
+        """Load cached frequencies if available."""
+        cache_file = self._cache_dir / f"freq_{cache_key}.npy"
+        if cache_file.exists():
+            try:
+                return np.load(str(cache_file))
+            except Exception as e:
+                logger.warning(f"Failed to load frequency cache: {e}")
+        return None
+
+    def _save_cached_frequencies(self, cache_key: str, frequencies: np.ndarray):
+        """Save frequencies to cache."""
+        cache_file = self._cache_dir / f"freq_{cache_key}.npy"
+        try:
+            np.save(str(cache_file), frequencies)
+        except Exception as e:
+            logger.warning(f"Failed to save frequency cache: {e}")
 
     def calculate_coevolution_matrix(
         self,
@@ -61,7 +269,7 @@ class CoevolutionAnalyzer:
         metal_sites: Optional[list[MetalSite]] = None,
     ) -> np.ndarray:
         """
-        Calculate the full coevolution matrix.
+        Calculate the full coevolution matrix using mutual information.
 
         Args:
             msa: Multiple sequence alignment
@@ -69,17 +277,10 @@ class CoevolutionAnalyzer:
             metal_sites: Known metal sites for enhanced analysis
 
         Returns:
-            Symmetric matrix of coevolution scores
+            Symmetric matrix of coevolution scores with APC correction
         """
-        if self.method == "mi_apc":
-            coevo_matrix = self._calculate_mi_apc(msa, seq_weights)
-        elif self.method == "dca":
-            coevo_matrix = self._calculate_dca_scores(msa, seq_weights)
-        else:  # "both"
-            mi_matrix = self._calculate_mi_apc(msa, seq_weights)
-            dca_matrix = self._calculate_dca_scores(msa, seq_weights)
-            # Combine methods with equal weight
-            coevo_matrix = 0.5 * mi_matrix + 0.5 * dca_matrix
+        # Calculate MI matrix with APC correction
+        coevo_matrix = self._calculate_mi_apc(msa, seq_weights)
 
         # Apply sequence separation filter
         coevo_matrix = self._apply_separation_filter(coevo_matrix)
@@ -145,7 +346,7 @@ class CoevolutionAnalyzer:
         """Calculate amino acid frequencies for each position."""
         n_positions = msa.get_alignment_length()
         freqs = np.zeros((n_positions, self.n_states))
-        pseudocount = COEVOLUTION_PARAMETERS["pseudocount"]
+        pseudocount = self.pseudocount
 
         for pos in range(n_positions):
             # Add pseudocounts
@@ -169,7 +370,7 @@ class CoevolutionAnalyzer:
     ) -> np.ndarray:
         """Calculate joint amino acid frequencies for two positions."""
         joint_freq = np.zeros((self.n_states, self.n_states))
-        pseudocount = COEVOLUTION_PARAMETERS["pseudocount"]
+        pseudocount = self.pseudocount
 
         # Add pseudocounts
         joint_freq[:, :] = pseudocount / (self.n_states**2)
@@ -270,95 +471,6 @@ class CoevolutionAnalyzer:
 
         return z_scores
 
-    def _calculate_dca_scores(
-        self, msa: MultipleSeqAlignment, seq_weights: Optional[np.ndarray] = None
-    ) -> np.ndarray:
-        """
-        Calculate Direct Coupling Analysis scores.
-
-        This is a simplified DCA implementation using inverse covariance.
-        """
-        n_positions = msa.get_alignment_length()
-
-        # Convert MSA to numerical matrix
-        msa_matrix = self._msa_to_numerical(msa)
-
-        if seq_weights is None:
-            seq_weights = np.ones(len(msa)) / len(msa)
-
-        # Weight sequences
-        weighted_msa = msa_matrix * seq_weights[:, np.newaxis]
-
-        # Calculate covariance matrix
-        cov_matrix = np.cov(weighted_msa.T)
-
-        # Add regularization to ensure invertibility
-        reg_param = 0.01
-        cov_matrix += reg_param * np.eye(n_positions)
-
-        # Calculate inverse covariance (precision matrix)
-        try:
-            inv_cov = np.linalg.inv(cov_matrix)
-        except np.linalg.LinAlgError:
-            logger.warning("Covariance matrix inversion failed, using pseudoinverse")
-            inv_cov = np.linalg.pinv(cov_matrix)
-
-        # Convert to coupling strengths
-        coupling_matrix = np.abs(inv_cov)
-
-        # Zero diagonal
-        np.fill_diagonal(coupling_matrix, 0)
-
-        # Normalize
-        max_coupling = np.max(coupling_matrix)
-        if max_coupling > 0:
-            coupling_matrix /= max_coupling
-
-        return coupling_matrix
-
-    def _msa_to_numerical(self, msa: MultipleSeqAlignment) -> np.ndarray:
-        """Convert MSA to numerical matrix for DCA."""
-        n_sequences = len(msa)
-        n_positions = msa.get_alignment_length()
-
-        # Simple numerical encoding (more sophisticated encoding possible)
-        numerical_msa = np.zeros((n_sequences, n_positions))
-
-        for seq_idx, record in enumerate(msa):
-            for pos_idx, aa in enumerate(record.seq):
-                if aa in self.aa_to_idx:
-                    # Use hydrophobicity as numerical feature
-                    # (could use more sophisticated encoding)
-                    hydrophobicity_scale = {
-                        "A": 1.8,
-                        "R": -4.5,
-                        "N": -3.5,
-                        "D": -3.5,
-                        "C": 2.5,
-                        "Q": -3.5,
-                        "E": -3.5,
-                        "G": -0.4,
-                        "H": -3.2,
-                        "I": 4.5,
-                        "L": 3.8,
-                        "K": -3.9,
-                        "M": 1.9,
-                        "F": 2.8,
-                        "P": -1.6,
-                        "S": -0.8,
-                        "T": -0.7,
-                        "W": -0.9,
-                        "Y": -1.3,
-                        "V": 4.2,
-                    }
-                    numerical_msa[seq_idx, pos_idx] = hydrophobicity_scale.get(aa, 0)
-
-        # Standardize features
-        scaler = StandardScaler()
-        numerical_msa = scaler.fit_transform(numerical_msa)
-
-        return numerical_msa
-
     def _apply_separation_filter(self, coevo_matrix: np.ndarray) -> np.ndarray:
         """Apply minimum sequence separation filter."""
         n_positions = coevo_matrix.shape[0]
@@ -396,9 +508,18 @@ class CoevolutionAnalyzer:
                 if pos1 != pos2 and abs(pos1 - pos2) >= self.min_separation:
                     # Check if positions show coordinated conservation
                     if self._check_coordinated_conservation(msa, pos1, pos2):
-                        # Boost by 20%
-                        enhanced[pos1, pos2] *= 1.2
-                        enhanced[pos2, pos1] *= 1.2
+                        # Get boost factor based on metal type
+                        metal_type = next(
+                            site.metal_type.value
+                            for site in metal_sites
+                            if any(
+                                r.position - 1 == pos1
+                                for r in site.get_coordinating_residues()
+                            )
+                        )
+                        boost_factor = config.get_metal_boost_factor(metal_type)
+                        enhanced[pos1, pos2] *= boost_factor
+                        enhanced[pos2, pos1] *= boost_factor
 
         # Normalize
         max_score = np.max(enhanced)
@@ -411,8 +532,8 @@ class CoevolutionAnalyzer:
         self, msa: MultipleSeqAlignment, pos1: int, pos2: int
     ) -> bool:
         """Check if two positions show coordinated conservation patterns."""
-        # Simple check: positions co-vary in metal-binding residues
-        metal_binding_aas = set("CHMDE")
+        # Get metal binding residues from config
+        metal_binding_aas = set(config.get_property_group("metal_binding"))
 
         coordinated_count = 0
         total_count = 0
@@ -431,7 +552,9 @@ class CoevolutionAnalyzer:
             return False
 
         # Consider coordinated if >70% sequences show same pattern
-        return (coordinated_count / total_count) > 0.7
+        return (coordinated_count / total_count) > config.metal_binding[
+            "conservation_thresholds"
+        ]["binding_site"]
 
     def identify_coevolution_networks(
         self, coevo_matrix: np.ndarray, threshold: Optional[float] = None
@@ -524,3 +647,47 @@ class CoevolutionAnalyzer:
             sectors[label].append(pos + 1)  # 1-indexed
 
         return sectors
+
+    def _validate_msa_for_coevolution(self, msa: MultipleSeqAlignment) -> None:
+        """Validate MSA is suitable for coevolution analysis."""
+        try:
+            n_sequences = len(msa)
+            n_positions = msa.get_alignment_length()
+
+            if n_sequences < config.coevolution["min_sequences"]:
+                raise ValidationError(
+                    f"MSA has too few sequences for coevolution analysis: {n_sequences} "
+                    f"(minimum: {config.coevolution['min_sequences']})"
+                )
+
+            if n_positions < config.coevolution["min_positions"]:
+                raise ValidationError(
+                    f"MSA has too few positions for coevolution analysis: {n_positions} "
+                    f"(minimum: {config.coevolution['min_positions']})"
+                )
+
+            # Check sequence diversity
+            unique_seqs = set(str(record.seq) for record in msa)
+            if len(unique_seqs) < config.coevolution["min_unique_sequences"]:
+                raise ValidationError(
+                    f"MSA has too few unique sequences: {len(unique_seqs)} "
+                    f"(minimum: {config.coevolution['min_unique_sequences']})"
+                )
+
+            # Check gap content
+            gap_fractions = []
+            for pos in range(n_positions):
+                gaps = sum(1 for record in msa if record.seq[pos] == "-")
+                gap_fractions.append(gaps / n_sequences)
+
+            max_gap_fraction = max(gap_fractions)
+            if max_gap_fraction > config.coevolution["max_gap_fraction"]:
+                raise ValidationError(
+                    f"MSA has positions with too many gaps: {max_gap_fraction:.2%} "
+                    f"(maximum: {config.coevolution['max_gap_fraction']:.2%})"
+                )
+
+        except Exception as e:
+            if not isinstance(e, ValidationError):
+                raise ValidationError(f"MSA validation failed: {str(e)}")
+            raise

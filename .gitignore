@@ -4,3 +4,4 @@
 .venv/
 .cursorignore
 __pycache__/
+.cursorignore
