@@ -2,7 +2,7 @@
 name = "metalloprotein-intrinsically-disordered-predictor"
 version = "0.1.0"
 description = "Dual-track architecture for predicting functionally important conformations in intrinsically disordered metalloproteins"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Jack Frazier <jack.frazier03@gmail.com>"]
 license = "MIT"
 readme = "README.md"
 packages = [{include = "midp", from = "src"}]
@@ -22,7 +22,7 @@ torch-sparse = "^0.6.18"
 torch-cluster = "^1.6.3"
 
 # Protein-specific libraries
-biopython = "^1.82"
+biopython = "^1.75"
 biotite = "^0.38.0"
 fair-esm = "^2.0.0"
 
@@ -76,7 +76,7 @@ pytest = "^7.4.0"
 pytest-cov = "^4.1.0"
 pytest-asyncio = "^0.21.0"
 pytest-mock = "^3.11.0"
-ruff = "^0.1.0"
+ruff = "^0.2.1"
 mypy = "^1.6.0"
 pre-commit = "^3.5.0"
 ipython = "^8.16.0"
@@ -95,6 +95,7 @@ moto = "^4.2.0"
 
 [tool.poetry.extras]
 # Note: PyRosetta requires special installation - see documentation
+# Also need to figure out an alternative or workaround for pydrug
 
 [build-system]
 requires = ["poetry-core"]
