@@ -11,7 +11,6 @@ import re
 
 import numpy as np
 from Bio.Align import MultipleSeqAlignment, substitution_matrices
-from Bio.Substitution import MatrixInfo
 from scipy.stats import entropy
 
 from ...core.constants import (
@@ -47,8 +46,8 @@ class ConservationAnalyzer:
     def __init__(
         self,
         use_blosum: bool = True,
-        blosum_matrix: Optional[str] = None,
-        property_weight: Optional[float] = None,
+        blosum_matrix: str = "BLOSUM62",
+        property_weight: float = None,
     ):
         """
         Initialize conservation analyzer.
@@ -76,8 +75,8 @@ class ConservationAnalyzer:
         # Load BLOSUM matrix
         if self.use_blosum:
             try:
-                self.blosum = getattr(MatrixInfo, self.blosum_matrix)
-            except AttributeError:
+                self.blosum = substitution_matrices.load(self.blosum_matrix)
+            except Exception:
                 raise ValueError(f"Invalid BLOSUM matrix: {self.blosum_matrix}")
 
     def calculate_conservation_scores(
@@ -203,41 +202,42 @@ class ConservationAnalyzer:
         if seq_weights is None:
             seq_weights = np.ones(n_sequences)
 
-        # Calculate property frequencies
-        property_freqs = {prop: 0.0 for prop in self.property_groups}
-        total_weight = 0.0
+        for pos in range(n_positions):
+            # Calculate property frequencies
+            property_freqs = {prop: 0.0 for prop in self.property_groups}
+            total_weight = 0.0
 
-        for i, record in enumerate(msa):
-            aa = record.seq[pos]
-            if aa != "-" and aa != "X":
-                weight = seq_weights[i]
-                total_weight += weight
+            for i, record in enumerate(msa):
+                aa = record.seq[pos]
+                if aa != "-" and aa != "X":
+                    weight = seq_weights[i]
+                    total_weight += weight
 
-                # Add to property groups
-                for prop, aa_set in self.property_groups.items():
-                    if aa in aa_set:
-                        property_freqs[prop] += weight
+                    # Add to property groups
+                    for prop, aa_set in self.property_groups.items():
+                        if aa in aa_set:
+                            property_freqs[prop] += weight
 
-        if total_weight == 0:
-            property_scores = np.zeros(n_positions)
-            return property_scores
+            if total_weight == 0:
+                property_scores[pos] = 0.0
+                continue
 
-        # Normalize frequencies
-        for prop in property_freqs:
-            property_freqs[prop] /= total_weight
+            # Normalize frequencies
+            for prop in property_freqs:
+                property_freqs[prop] /= total_weight
 
-        # Calculate property conservation
-        # High score if one property dominates
-        max_prop_freq = max(property_freqs.values())
+            # Calculate property conservation
+            # High score if one property dominates
+            max_prop_freq = max(property_freqs.values())
 
-        # Additional scoring for specific important properties
-        metal_binding_freq = property_freqs["metal_binding"]
-        cysteine_freq = property_freqs["cysteine"]
+            # Additional scoring for specific important properties
+            metal_binding_freq = property_freqs["metal_binding"]
+            cysteine_freq = property_freqs["cysteine"]
 
-        # Weighted combination
-        property_scores = (
-            0.6 * max_prop_freq + 0.2 * metal_binding_freq + 0.2 * cysteine_freq
-        )
+            # Weighted combination
+            property_scores[pos] = (
+                0.6 * max_prop_freq + 0.2 * metal_binding_freq + 0.2 * cysteine_freq
+            )
 
         return property_scores
 
@@ -261,8 +261,8 @@ class ConservationAnalyzer:
                 seq_weights = np.ones(n_sequences)
 
             # Validate matrix bounds
-            min_score = float(self.blosum.min())
-            max_score = float(self.blosum.max())
+            min_score = float(min(self.blosum.min()))
+            max_score = float(max(self.blosum.max()))
             score_range = max_score - min_score
 
             for pos in range(n_positions):

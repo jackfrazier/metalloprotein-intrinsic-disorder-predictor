@@ -1,7 +1,8 @@
-.DS_Store
+/.DS_Store
 .cursor/
 .vscode/
 .venv/
-.cursorignore
 __pycache__/
 .cursorignore
+Miniconda3-latest-MacOSX-arm64.sh
+.DS_Store

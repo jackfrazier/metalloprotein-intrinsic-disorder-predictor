@@ -10,19 +10,19 @@ packages = [{include = "midp", from = "src"}]
 [tool.poetry.dependencies]
 python = ">=3.9,<3.12"
 
-# Core ML dependencies
-torch = "^2.1.0"
-torchvision = "^0.16.0"
-pytorch-lightning = "^2.1.0"
+# Core ML dependencies installed via conda for now
+# torch = "^2.1.0"
+# torchvision = "^0.16.0"
+# pytorch-lightning = "^2.1.0"
 
-# Graph neural network libraries
-torch-geometric = "^2.4.0"
-torch-scatter = "^2.1.2"
-torch-sparse = "^0.6.18"
-torch-cluster = "^1.6.3"
+# Graph neural network libraries also installed via conda
+# torch-geometric = "^2.4.0"
+# torch-scatter = "^2.1.2"
+# torch-sparse = "^0.6.18"
+# torch-cluster = "^1.6.3"
 
 # Protein-specific libraries
-biopython = "^1.75"
+# biopython = "^1.82"
 biotite = "^0.38.0"
 fair-esm = "^2.0.0"
 

@@ -5,33 +5,23 @@ Tests edge cases and error handling for conservation and coevolution analysis.
 
 import logging
 from typing import List, Optional
-import os
-import sys
+
+import numpy as np
 import pytest
+from Bio.Align import MultipleSeqAlignment
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
 
-try:
-    import numpy as np
-    from Bio.Align import MultipleSeqAlignment
-    from Bio.Seq import Seq
-    from Bio.SeqRecord import SeqRecord
-    from midp.interpretable.evolutionary.evolutionary_features import (
-        CoevolutionAnalyzer,
-        ConservationAnalyzer,
-        MetalloproteinEvolutionaryAnalyzer,
-    )
-    from midp.core.data_structures import MetalSite, MetalType, ProteinData, ResidueType
+from src.midp.interpretable.evolutionary.evolutionary_features import (
+    CoevolutionAnalyzer,
+    ConservationAnalyzer,
+    MetalloproteinEvolutionaryAnalyzer,
+)
 
-    DEPENDENCIES_AVAILABLE = True
-except ImportError:
-    DEPENDENCIES_AVAILABLE = False
+from src.midp.core.data_structures import MetalSite, MetalType, ProteinData, ResidueType
 
 # Set up logging
 logger = logging.getLogger(__name__)
-
-# Skip all tests if dependencies are not available
-pytestmark = pytest.mark.skipif(
-    not DEPENDENCIES_AVAILABLE, reason="Required dependencies are not available"
-)
 
 
 @pytest.fixture()
